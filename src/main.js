@@ -1,19 +1,42 @@
 // Wires everything together: mic input -> pitch detection -> key + chord ->
 // band, plus the live pitch ribbon. Browser-only (Tone.js, Web Audio, canvas).
 
-import { detectPitchYIN, freqToMidi, freqToPitchClass, NOTE_NAMES, centsOff } from './pitch.js';
+import { detectPitchYIN, freqToMidi, freqToPitchClass, NOTE_NAMES } from './pitch.js';
 import {
   createKeyTracker,
   chooseChord,
-  voiceChord,
+  voiceChordSpread,
   keyName,
   chordName,
+  GUITAR_RANGE,
 } from './theory.js';
 import { Band } from './band.js';
 
-const ANALYSIS_SIZE = 2048; // samples per pitch estimate
-const MIN_FREQ = 70; // ignore sub-bass rumble / handling noise
+const ANALYSIS_SIZE = 2048;
+const MIN_FREQ = 70;
 const MAX_FREQ = 1200;
+
+// Strum patterns. Each event is a position within the chord step (0..1), a
+// direction (D down / U up), and a relative velocity. `hold` = pad only.
+const STRUM_PATTERNS = {
+  down: [{ at: 0, dir: 'D', vel: 1 }],
+  downup: [
+    { at: 0, dir: 'D', vel: 1 },
+    { at: 0.5, dir: 'U', vel: 0.7 },
+  ],
+  folk: [
+    { at: 0, dir: 'D', vel: 1 },
+    { at: 0.5, dir: 'D', vel: 0.85 },
+    { at: 0.625, dir: 'U', vel: 0.6 },
+    { at: 0.875, dir: 'U', vel: 0.6 },
+  ],
+  island: [
+    { at: 0.25, dir: 'U', vel: 0.6 },
+    { at: 0.5, dir: 'D', vel: 0.95 },
+    { at: 0.75, dir: 'U', vel: 0.6 },
+  ],
+  hold: [],
+};
 
 const els = {
   start: document.getElementById('start'),
@@ -21,12 +44,15 @@ const els = {
   keyLabel: document.getElementById('key'),
   keyLock: document.getElementById('key-lock'),
   chord: document.getElementById('chord'),
+  strum: document.getElementById('strum'),
+  chordRate: document.getElementById('chord-rate'),
   tempo: document.getElementById('tempo'),
   tempoLabel: document.getElementById('tempo-label'),
   tap: document.getElementById('tap'),
-  ukeMix: document.getElementById('uke-mix'),
+  guitarMix: document.getElementById('guitar-mix'),
   bassMix: document.getElementById('bass-mix'),
   drumMix: document.getElementById('drum-mix'),
+  padMix: document.getElementById('pad-mix'),
   canvas: document.getElementById('ribbon'),
 };
 
@@ -40,9 +66,11 @@ const state = {
   key: null,
   chord: null,
   barHistogram: new Array(12).fill(0),
-  liveMidi: null, // smoothed current pitch for the ribbon
-  trail: [], // recent pitches for the ribbon
+  liveMidi: null,
+  trail: [],
   tapTimes: [],
+  chordRepeatId: null,
+  drumRepeatId: null,
 };
 
 // --- mic + transport ------------------------------------------------------
@@ -65,7 +93,8 @@ async function start() {
   applyMix();
 
   Tone.Transport.bpm.value = Number(els.tempo.value);
-  Tone.Transport.scheduleRepeat(onBar, '1m');
+  scheduleChords();
+  state.drumRepeatId = Tone.Transport.scheduleRepeat(onDrumBar, '1m');
   Tone.Transport.start();
 
   state.running = true;
@@ -76,38 +105,68 @@ async function start() {
 
 function stop() {
   state.running = false;
+  if (state.band) state.band.releasePad(Tone.now());
   Tone.Transport.stop();
   Tone.Transport.cancel();
+  state.chordRepeatId = null;
+  state.drumRepeatId = null;
   if (state.band) state.band.dispose();
   state.band = null;
+  state.chord = null;
   els.start.textContent = 'Start';
   els.status.textContent = 'Stopped.';
 }
 
-// Called once per bar: commit the bar we just sang into a key + chord, and
-// play it. The band therefore trails the voice by one bar.
-function onBar(time) {
+// Chord/strum/pad run on the selected subdivision; drums keep their own bar.
+function scheduleChords() {
+  if (state.chordRepeatId != null) Tone.Transport.clear(state.chordRepeatId);
+  state.chordRepeatId = Tone.Transport.scheduleRepeat(onChordStep, els.chordRate.value);
+}
+
+function stepBeats() {
+  return els.chordRate.value === '2n' ? 2 : 4;
+}
+
+// One chord step: turn the notes sung over the step into a key + chord, strum
+// it with the chosen pattern, drop a bass note, and (re)voice the pad only when
+// the chord actually changes so it sustains across steps.
+function onChordStep(time) {
   const hist = state.barHistogram;
+  state.barHistogram = new Array(12).fill(0);
   const total = hist.reduce((a, b) => a + b, 0);
+  if (total === 0) return;
 
-  if (total > 0) {
-    let key = state.keyTracker.update(hist);
-    if (els.keyLock.value !== 'auto') {
-      key = parseLockedKey(els.keyLock.value);
-    }
-    state.key = key;
-    const chord = chooseChord(hist, key, { prev: state.chord, repeatPenalty: 0.5 });
-    state.chord = chord;
+  let key = state.keyTracker.update(hist);
+  if (els.keyLock.value !== 'auto') key = parseLockedKey(els.keyLock.value);
+  state.key = key;
 
-    const voicing = voiceChord(chord);
-    const barSeconds = (60 / Tone.Transport.bpm.value) * 4;
-    state.band.playBar({ voicing, root: voicing[0] }, time, barSeconds);
+  const prev = state.chord;
+  const chord = chooseChord(hist, key, { prev, repeatPenalty: 0.5 });
+  const changed = !prev || prev.root !== chord.root || prev.quality !== chord.quality;
+  state.chord = chord;
 
-    els.keyLabel.textContent = keyName(key);
-    els.chord.textContent = chordName(chord);
+  const beatSeconds = 60 / Tone.Transport.bpm.value;
+  const stepSeconds = beatSeconds * stepBeats();
+  const voicing = voiceChordSpread(chord, { range: GUITAR_RANGE, maxVoices: 5 });
+
+  for (const e of STRUM_PATTERNS[els.strum.value] || []) {
+    state.band.strum(voicing, time + e.at * stepSeconds, { direction: e.dir, velocity: e.vel });
+  }
+  state.band.playBass(voicing[0], time, stepSeconds * 0.9);
+
+  if (changed) {
+    const padVoicing = voiceChordSpread(chord, { range: { low: 52, high: 76 }, maxVoices: 4 });
+    state.band.setPad(padVoicing, time);
   }
 
-  state.barHistogram = new Array(12).fill(0);
+  els.keyLabel.textContent = keyName(key);
+  els.chord.textContent = chordName(chord);
+}
+
+function onDrumBar(time) {
+  if (!state.band) return;
+  const barSeconds = (60 / Tone.Transport.bpm.value) * 4;
+  state.band.playBeat(time, barSeconds);
 }
 
 // --- analysis loop --------------------------------------------------------
@@ -132,7 +191,6 @@ function analyseFrame() {
   requestAnimationFrame(analyseFrame);
 }
 
-// Root-mean-square gate so near-silence doesn't register as a pitch.
 function isVoiced(buf) {
   let sum = 0;
   for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
@@ -147,7 +205,7 @@ function drawRibbon() {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return; // not laid out yet
+  if (w === 0 || h === 0) return;
   if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
     canvas.width = w * dpr;
     canvas.height = h * dpr;
@@ -155,11 +213,10 @@ function drawRibbon() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const lowMidi = 48; // C3
-  const highMidi = 84; // C6
+  const lowMidi = 48;
+  const highMidi = 84;
   const toY = (m) => h - ((m - lowMidi) / (highMidi - lowMidi)) * h;
 
-  // 12 horizontal note lanes, with the key's scale tones highlighted.
   const scalePcs = state.key ? scaleOf(state.key) : null;
   for (let m = lowMidi; m <= highMidi; m++) {
     const pc = ((m % 12) + 12) % 12;
@@ -178,7 +235,6 @@ function drawRibbon() {
     ctx.stroke();
   }
 
-  // The voice trail, left (old) to right (now).
   ctx.strokeStyle = 'rgba(130, 200, 255, 0.9)';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
@@ -198,7 +254,6 @@ function drawRibbon() {
   });
   ctx.stroke();
 
-  // Current-pitch dot + note readout at the right edge.
   if (state.liveMidi != null) {
     const y = toY(state.liveMidi);
     ctx.fillStyle = 'rgb(130, 200, 255)';
@@ -225,9 +280,10 @@ function parseLockedKey(value) {
 function applyMix() {
   if (!state.band) return;
   state.band.setMix({
-    uke: Number(els.ukeMix.value),
+    guitar: Number(els.guitarMix.value),
     bass: Number(els.bassMix.value),
     drums: Number(els.drumMix.value),
+    pad: Number(els.padMix.value),
   });
 }
 
@@ -237,9 +293,7 @@ function tapTempo() {
   state.tapTimes.push(now);
   if (state.tapTimes.length >= 2) {
     const spans = [];
-    for (let i = 1; i < state.tapTimes.length; i++) {
-      spans.push(state.tapTimes[i] - state.tapTimes[i - 1]);
-    }
+    for (let i = 1; i < state.tapTimes.length; i++) spans.push(state.tapTimes[i] - state.tapTimes[i - 1]);
     const avg = spans.reduce((a, b) => a + b, 0) / spans.length;
     const bpm = Math.round(60000 / avg);
     if (bpm >= 40 && bpm <= 220) {
@@ -262,7 +316,12 @@ els.start.addEventListener('click', () => {
 });
 els.tempo.addEventListener('input', onTempoChange);
 els.tap.addEventListener('click', tapTempo);
-[els.ukeMix, els.bassMix, els.drumMix].forEach((s) => s.addEventListener('input', applyMix));
+els.chordRate.addEventListener('change', () => {
+  if (state.running) scheduleChords();
+});
+[els.guitarMix, els.bassMix, els.drumMix, els.padMix].forEach((s) =>
+  s.addEventListener('input', applyMix),
+);
 window.addEventListener('resize', drawRibbon);
 window.addEventListener('load', drawRibbon);
 onTempoChange();

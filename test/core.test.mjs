@@ -7,8 +7,10 @@ import {
   createKeyTracker,
   chooseChord,
   voiceChord,
+  voiceChordSpread,
   diatonicTriads,
   UKE_RANGE,
+  GUITAR_RANGE,
 } from '../src/theory.js';
 
 // --- helpers --------------------------------------------------------------
@@ -143,5 +145,22 @@ test('voiceChord stays within the ukulele range', () => {
     }
     const pcs = new Set(notes.map((m) => ((m % 12) + 12) % 12));
     assert.deepEqual([...pcs].sort((a, b) => a - b), [...chord.notes].sort((a, b) => a - b));
+  }
+});
+
+test('voiceChordSpread stacks within the guitar range and starts on the root', () => {
+  const key = { tonic: 0, mode: 'major' };
+  for (const chord of diatonicTriads(key)) {
+    const notes = voiceChordSpread(chord, { maxVoices: 5 });
+    assert.ok(notes.length >= 1 && notes.length <= 5);
+    for (const m of notes) {
+      assert.ok(m >= GUITAR_RANGE.low && m <= GUITAR_RANGE.high, `note ${m} out of range`);
+    }
+    // ascending
+    for (let i = 1; i < notes.length; i++) assert.ok(notes[i] > notes[i - 1]);
+    // bottom note is the chord root
+    assert.equal(((notes[0] % 12) + 12) % 12, chord.root);
+    // every note is a chord tone
+    for (const m of notes) assert.ok(chord.notes.includes(((m % 12) + 12) % 12));
   }
 });

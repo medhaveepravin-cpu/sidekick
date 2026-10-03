@@ -49,6 +49,22 @@
         </div>
 
         <div class="row">
+          <label for="strum">Strum</label>
+          <select id="strum">
+            <option value="down">Down — one per step</option>
+            <option value="downup" selected>Down-Up</option>
+            <option value="folk">Folk (D · D-U-U)</option>
+            <option value="island">Island / offbeat</option>
+            <option value="hold">Hold (pad only)</option>
+          </select>
+          <label for="chord-rate">Change</label>
+          <select id="chord-rate">
+            <option value="1m">Every bar</option>
+            <option value="2n" selected>Every ½ bar (snappier)</option>
+          </select>
+        </div>
+
+        <div class="row">
           <label for="tempo">Tempo</label>
           <input id="tempo" type="range" min="50" max="180" value="96" />
           <span id="tempo-label">96 BPM</span>
@@ -56,14 +72,15 @@
         </div>
 
         <div class="mix">
-          <label>Ukulele<input id="uke-mix" type="range" min="0" max="1" step="0.01" value="0.9" /></label>
+          <label>Guitar<input id="guitar-mix" type="range" min="0" max="1" step="0.01" value="0.9" /></label>
           <label>Bass<input id="bass-mix" type="range" min="0" max="1" step="0.01" value="0.7" /></label>
           <label>Drums<input id="drum-mix" type="range" min="0" max="1" step="0.01" value="0.45" /></label>
+          <label>Pad (sustain)<input id="pad-mix" type="range" min="0" max="1" step="0.01" value="0.25" /></label>
         </div>
       </section>
 
       <footer>
-        <p>The band picks each chord from the previous bar, so it trails you by one bar.</p>
+        <p>The band picks each chord from the notes you just sang, so it trails you slightly. Raise the pad and it sustains through the gap; set Change to ½ bar to tighten it.</p>
       </footer>
     </main>
 

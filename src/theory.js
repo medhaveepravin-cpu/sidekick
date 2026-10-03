@@ -154,7 +154,10 @@ export function chooseChord(histogram, key, { prev = null, repeatPenalty = 0 } =
 // Ukulele sounds roughly C4..C6; keep voicings inside that window.
 export const UKE_RANGE = { low: 60, high: 84 };
 
-// Voice a triad as concrete MIDI notes inside the ukulele range, low to high.
+// Acoustic guitar: low E2 up to around E5.
+export const GUITAR_RANGE = { low: 40, high: 76 };
+
+// Voice a triad as concrete MIDI notes inside a range, low to high (one per tone).
 export function voiceChord(chord, { range = UKE_RANGE } = {}) {
   const notes = [];
   for (const pc of chord.notes) {
@@ -164,6 +167,27 @@ export function voiceChord(chord, { range = UKE_RANGE } = {}) {
     notes.push(m);
   }
   notes.sort((a, b) => a - b);
+  return notes;
+}
+
+// A fuller, strummable voicing: the root low, then chord tones stacked upward
+// (thirds, fifths, octave doublings) until we run out of range or voices.
+export function voiceChordSpread(chord, { range = GUITAR_RANGE, maxVoices = 5 } = {}) {
+  const tones = chord.notes; // [root, third, fifth] as pitch classes
+  let root = range.low + ((((chord.root - range.low) % 12) + 12) % 12);
+  if (root > range.high) root -= 12;
+  const notes = [root];
+  let m = root;
+  let idx = 0;
+  while (notes.length < maxVoices) {
+    idx++;
+    const pc = tones[idx % tones.length];
+    let cand = m + ((((pc - m) % 12) + 12) % 12);
+    if (cand <= m) cand += 12;
+    if (cand > range.high) break;
+    notes.push(cand);
+    m = cand;
+  }
   return notes;
 }
 

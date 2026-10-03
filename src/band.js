@@ -1,5 +1,6 @@
-// The backing band: a plucked ukulele, an upright-ish bass, and a drum kit,
-// built on Tone.js. Browser-only (depends on the global `Tone` from the CDN).
+// The backing band: a plucked acoustic guitar (polyphonic, so a strum rings as
+// a chord), a bass, a drum kit, and a sustaining pad that holds the chord
+// between changes. Browser-only (depends on the global `Tone` from the CDN).
 
 import { midiToFreq } from './pitch.js';
 
@@ -9,18 +10,64 @@ function midiToToneNote(midi) {
   return MIDI_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
 }
 
+// Round-robin bank of PluckSynth voices. PluckSynth is monophonic on its own,
+// so a strum needs several voices ringing at once to sound like a chord.
+class PluckBank {
+  constructor(voices, opts) {
+    this.voices = Array.from({ length: voices }, () => new Tone.PluckSynth(opts));
+    this.out = new Tone.Gain(1);
+    this.voices.forEach((v) => v.connect(this.out));
+    this.i = 0;
+  }
+  connect(dest) {
+    this.out.connect(dest);
+    return this;
+  }
+  pluck(note, time, velocity = 1) {
+    const v = this.voices[this.i % this.voices.length];
+    this.i++;
+    v.triggerAttack(note, time, velocity);
+  }
+  dispose() {
+    this.voices.forEach((v) => v.dispose());
+    this.out.dispose();
+  }
+}
+
+// A small bank of sustaining synth voices for the pad layer.
+class PadBank {
+  constructor(voices, opts) {
+    this.voices = Array.from({ length: voices }, () => new Tone.Synth(opts));
+    this.out = new Tone.Gain(1);
+    this.voices.forEach((v) => v.connect(this.out));
+  }
+  connect(dest) {
+    this.out.connect(dest);
+    return this;
+  }
+  set(midiNotes, time) {
+    this.voices.forEach((v) => v.triggerRelease(time));
+    midiNotes.slice(0, this.voices.length).forEach((m, i) => {
+      this.voices[i].triggerAttack(midiToToneNote(m), time + 0.005);
+    });
+  }
+  release(time) {
+    this.voices.forEach((v) => v.triggerRelease(time));
+  }
+  dispose() {
+    this.voices.forEach((v) => v.dispose());
+    this.out.dispose();
+  }
+}
+
 export class Band {
   constructor() {
-    // Plucked ukulele: short, bright Karplus-strong-ish pluck.
-    this.uke = new Tone.PluckSynth({
-      attackNoise: 1.2,
-      dampening: 4000,
-      resonance: 0.9,
-    });
-    this.ukeGain = new Tone.Gain(0.9).toDestination();
-    this.uke.connect(this.ukeGain);
+    // Acoustic-ish guitar: 8 pluck voices so overlapping strums all ring.
+    this.guitar = new PluckBank(8, { attackNoise: 0.9, dampening: 3000, resonance: 0.95 });
+    this.guitarGain = new Tone.Gain(0.9).toDestination();
+    this.guitar.connect(this.guitarGain);
 
-    // Bass: a rounded mono synth an octave or two below.
+    // Bass.
     this.bass = new Tone.MonoSynth({
       oscillator: { type: 'sine' },
       envelope: { attack: 0.02, decay: 0.2, sustain: 0.6, release: 0.4 },
@@ -29,7 +76,15 @@ export class Band {
     this.bassGain = new Tone.Gain(0.7).toDestination();
     this.bass.connect(this.bassGain);
 
-    // Drums: kick (membrane), snare + hat (noise).
+    // Pad: soft triangle voices with a slow envelope that hold a chord.
+    this.pad = new PadBank(4, {
+      oscillator: { type: 'triangle' },
+      envelope: { attack: 0.5, decay: 0.3, sustain: 0.85, release: 1.6 },
+    });
+    this.padGain = new Tone.Gain(0.25).toDestination();
+    this.pad.connect(this.padGain);
+
+    // Drums.
     this.kick = new Tone.MembraneSynth({ octaves: 4, pitchDecay: 0.05 });
     this.snare = new Tone.NoiseSynth({
       noise: { type: 'white' },
@@ -45,30 +100,35 @@ export class Band {
     this.snare.connect(this.drumGain);
     const hatFilter = new Tone.Filter(8000, 'highpass');
     this.hat.chain(hatFilter, this.drumGain);
-
-    this.currentChord = null;
   }
 
-  setMix({ uke, bass, drums }) {
-    if (uke != null) this.ukeGain.gain.rampTo(uke, 0.1);
+  setMix({ guitar, bass, drums, pad }) {
+    if (guitar != null) this.guitarGain.gain.rampTo(guitar, 0.1);
     if (bass != null) this.bassGain.gain.rampTo(bass, 0.1);
     if (drums != null) this.drumGain.gain.rampTo(drums, 0.1);
+    if (pad != null) this.padGain.gain.rampTo(pad, 0.1);
   }
 
-  // Strum a voiced chord (array of MIDI notes), slightly spread like a real strum.
-  strum(midiNotes, time, strumSpread = 0.012) {
-    midiNotes.forEach((m, i) => {
-      this.uke.triggerAttack(midiToToneNote(m), time + i * strumSpread);
-    });
+  // Strum a voiced chord. Direction 'D' goes low->high, 'U' high->low.
+  strum(midiNotes, time, { direction = 'D', spread = 0.022, velocity = 1 } = {}) {
+    const order = direction === 'U' ? [...midiNotes].reverse() : midiNotes;
+    order.forEach((m, i) => this.guitar.pluck(midiToToneNote(m), time + i * spread, velocity));
   }
 
-  // Play the root as a bass note, dropped two octaves.
   playBass(rootMidi, time, duration = '4n') {
-    const freq = midiToFreq(rootMidi - 24);
-    this.bass.triggerAttackRelease(freq, duration, time);
+    this.bass.triggerAttackRelease(midiToFreq(rootMidi - 24), duration, time);
   }
 
-  // A simple backbeat for one bar in 4/4, scheduled against `time`.
+  // Hold a chord on the pad until the next setPad / releasePad.
+  setPad(midiNotes, time) {
+    this.pad.set(midiNotes, time);
+  }
+
+  releasePad(time) {
+    this.pad.release(time);
+  }
+
+  // A steady backbeat for one bar of 4/4.
   playBeat(time, barSeconds) {
     const step = barSeconds / 4;
     this.kick.triggerAttackRelease('C1', '8n', time);
@@ -80,16 +140,9 @@ export class Band {
     }
   }
 
-  // Play a whole bar: strum on the downbeat, bass on 1 and 3, drums throughout.
-  playBar({ voicing, root }, time, barSeconds) {
-    this.currentChord = { voicing, root };
-    this.strum(voicing, time);
-    this.playBass(root, time, barSeconds / 2);
-    this.playBass(root, time + barSeconds / 2, barSeconds / 2);
-    this.playBeat(time, barSeconds);
-  }
-
   dispose() {
-    [this.uke, this.bass, this.kick, this.snare, this.hat].forEach((n) => n.dispose());
+    [this.guitar, this.bass, this.pad, this.kick, this.snare, this.hat].forEach((n) =>
+      n.dispose(),
+    );
   }
 }

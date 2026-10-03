@@ -147,6 +147,7 @@ function drawRibbon() {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
+  if (w === 0 || h === 0) return; // not laid out yet
   if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
     canvas.width = w * dpr;
     canvas.height = h * dpr;
@@ -262,5 +263,7 @@ els.start.addEventListener('click', () => {
 els.tempo.addEventListener('input', onTempoChange);
 els.tap.addEventListener('click', tapTempo);
 [els.ukeMix, els.bassMix, els.drumMix].forEach((s) => s.addEventListener('input', applyMix));
+window.addEventListener('resize', drawRibbon);
+window.addEventListener('load', drawRibbon);
 onTempoChange();
 drawRibbon();

@@ -1,0 +1,12 @@
+{
+  "name": "sidekick",
+  "version": "0.1.0",
+  "description": "A browser backing band that follows your voice.",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node --test test/core.test.mjs"
+  },
+  "keywords": ["audio", "pitch-detection", "yin", "tone.js", "music", "web-audio"],
+  "license": "MIT"
+}

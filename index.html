@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sidekick — a backing band that follows your voice</title>
+    <link rel="stylesheet" href="style.css" />
+    <!-- Tone.js from cdnjs. If audio never starts, check this URL first. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Sidekick</h1>
+        <p class="tagline">Sing or hum. It finds your key and plays along.</p>
+      </header>
+
+      <section class="stage">
+        <div class="chord-display">
+          <span id="chord" aria-live="polite">—</span>
+        </div>
+        <canvas id="ribbon" aria-label="Live pitch ribbon"></canvas>
+      </section>
+
+      <section class="controls">
+        <button id="start" class="primary">Start</button>
+        <p id="status" class="status">Press Start and allow the mic. Headphones recommended.</p>
+
+        <div class="row">
+          <label for="key-lock">Key</label>
+          <select id="key-lock">
+            <option value="auto">Auto-detect</option>
+            <optgroup label="Major">
+              <option value="C:major">C major</option>
+              <option value="G:major">G major</option>
+              <option value="D:major">D major</option>
+              <option value="A:major">A major</option>
+              <option value="E:major">E major</option>
+              <option value="F:major">F major</option>
+            </optgroup>
+            <optgroup label="Minor">
+              <option value="A:minor">A minor</option>
+              <option value="E:minor">E minor</option>
+              <option value="D:minor">D minor</option>
+              <option value="B:minor">B minor</option>
+            </optgroup>
+          </select>
+          <span class="key-readout">Detected: <strong id="key">—</strong></span>
+        </div>
+
+        <div class="row">
+          <label for="tempo">Tempo</label>
+          <input id="tempo" type="range" min="50" max="180" value="96" />
+          <span id="tempo-label">96 BPM</span>
+          <button id="tap" class="ghost">Tap</button>
+        </div>
+
+        <div class="mix">
+          <label>Ukulele<input id="uke-mix" type="range" min="0" max="1" step="0.01" value="0.9" /></label>
+          <label>Bass<input id="bass-mix" type="range" min="0" max="1" step="0.01" value="0.7" /></label>
+          <label>Drums<input id="drum-mix" type="range" min="0" max="1" step="0.01" value="0.45" /></label>
+        </div>
+      </section>
+
+      <footer>
+        <p>The band picks each chord from the previous bar, so it trails you by one bar.</p>
+      </footer>
+    </main>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

@@ -141,6 +141,19 @@ select {
 .key-readout {
   color: var(--muted);
 }
+
+label.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  color: var(--text);
+  cursor: pointer;
+}
+label.check input {
+  width: 16px;
+  height: 16px;
+}
 .key-readout strong {
   color: var(--accent-2);
 }

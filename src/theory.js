@@ -15,6 +15,9 @@ const MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11];
 const MINOR_SCALE = [0, 2, 3, 5, 7, 8, 10]; // natural minor
 const MAJOR_QUALITIES = ['maj', 'min', 'min', 'maj', 'maj', 'min', 'dim'];
 const MINOR_QUALITIES = ['min', 'dim', 'maj', 'min', 'min', 'maj', 'maj'];
+// Seventh-chord qualities per scale degree.
+const MAJOR_SEVENTHS = ['maj7', 'm7', 'm7', 'maj7', '7', 'm7', 'm7b5'];
+const MINOR_SEVENTHS = ['m7', 'm7b5', 'maj7', 'm7', 'm7', 'maj7', '7'];
 
 function mean(arr) {
   let s = 0;
@@ -131,24 +134,31 @@ export function diatonicTriads(key) {
   return triads;
 }
 
-// Pick the diatonic triad that best covers the pitch classes sung over a bar.
-// `prev` + `repeatPenalty` discourage sitting on one chord forever.
-export function chooseChord(histogram, key, { prev = null, repeatPenalty = 0 } = {}) {
+// Extend a diatonic triad to its proper seventh chord for the key.
+export function addSeventh(chord, key) {
+  const scale = key.mode === 'major' ? MAJOR_SCALE : MINOR_SCALE;
+  const labels = key.mode === 'major' ? MAJOR_SEVENTHS : MINOR_SEVENTHS;
+  const seventh = (key.tonic + scale[(chord.degree + 6) % 7]) % 12;
+  return { ...chord, quality: labels[chord.degree], notes: [...chord.notes, seventh] };
+}
+
+// Pick the diatonic chord that best covers the pitch classes sung over a window.
+// `prev` + `repeatPenalty` discourage sitting on one chord forever; `sevenths`
+// extends the winner to a seventh chord.
+export function chooseChord(histogram, key, { prev = null, repeatPenalty = 0, sevenths = false } = {}) {
   const triads = diatonicTriads(key);
   let best = null;
   let bestScore = -Infinity;
   for (const t of triads) {
     let score = t.notes.reduce((s, pc) => s + (histogram[pc] || 0), 0);
     score += 0.25 * (histogram[t.root] || 0); // bias toward matching the root
-    if (prev && t.root === prev.root && t.quality === prev.quality) {
-      score -= repeatPenalty;
-    }
+    if (prev && t.root === prev.root) score -= repeatPenalty;
     if (score > bestScore) {
       bestScore = score;
       best = t;
     }
   }
-  return best;
+  return sevenths ? addSeventh(best, key) : best;
 }
 
 // Ukulele sounds roughly C4..C6; keep voicings inside that window.
@@ -192,6 +202,14 @@ export function voiceChordSpread(chord, { range = GUITAR_RANGE, maxVoices = 5 } 
 }
 
 export function chordName(chord) {
-  const suffix = chord.quality === 'maj' ? '' : chord.quality === 'min' ? 'm' : 'dim';
-  return NOTE_NAMES[chord.root] + suffix;
+  const suffix = {
+    maj: '',
+    min: 'm',
+    dim: 'dim',
+    maj7: 'maj7',
+    m7: 'm7',
+    7: '7',
+    m7b5: 'm7♭5',
+  };
+  return NOTE_NAMES[chord.root] + (suffix[chord.quality] ?? '');
 }

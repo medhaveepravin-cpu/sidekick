@@ -6,6 +6,7 @@ import {
   estimateKey,
   createKeyTracker,
   chooseChord,
+  chordName,
   voiceChord,
   voiceChordSpread,
   diatonicTriads,
@@ -131,6 +132,24 @@ test('chooseChord picks the dominant when V is outlined', () => {
   const chord = chooseChord(hist({ 7: 5, 11: 4, 2: 4 }), key); // G B D
   assert.equal(chord.root, 7);
   assert.equal(chord.quality, 'maj');
+});
+
+test('chooseChord with sevenths makes the tonic a maj7', () => {
+  const key = { tonic: 0, mode: 'major' };
+  const chord = chooseChord(hist({ 0: 5, 4: 4, 7: 4 }), key, { sevenths: true });
+  assert.equal(chord.root, 0);
+  assert.equal(chord.quality, 'maj7');
+  assert.deepEqual([...chord.notes].sort((a, b) => a - b), [0, 4, 7, 11]); // C E G B
+  assert.equal(chordName(chord), 'Cmaj7');
+});
+
+test('chooseChord with sevenths makes the dominant a dominant 7', () => {
+  const key = { tonic: 0, mode: 'major' };
+  const chord = chooseChord(hist({ 7: 5, 11: 4, 2: 4 }), key, { sevenths: true });
+  assert.equal(chord.root, 7);
+  assert.equal(chord.quality, '7');
+  assert.deepEqual([...chord.notes].sort((a, b) => a - b), [2, 5, 7, 11]); // G B D F
+  assert.equal(chordName(chord), 'G7');
 });
 
 // --- voicing --------------------------------------------------------------

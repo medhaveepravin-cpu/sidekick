@@ -128,16 +128,12 @@ export class Band {
     this.pad.release(time);
   }
 
-  // A steady backbeat for one bar of 4/4.
-  playBeat(time, barSeconds) {
-    const step = barSeconds / 4;
-    this.kick.triggerAttackRelease('C1', '8n', time);
-    this.kick.triggerAttackRelease('C1', '8n', time + step * 2);
-    this.snare.triggerAttackRelease('8n', time + step);
-    this.snare.triggerAttackRelease('8n', time + step * 3);
-    for (let i = 0; i < 8; i++) {
-      this.hat.triggerAttackRelease('16n', time + (step / 2) * i);
-    }
+  // One eighth-note of a steady backbeat. `tick` is 0..7 within the bar:
+  // kick on beats 1 & 3, snare on 2 & 4, hat on every eighth.
+  drumTick(tick, time) {
+    if (tick % 4 === 0) this.kick.triggerAttackRelease('C1', '8n', time);
+    if (tick === 2 || tick === 6) this.snare.triggerAttackRelease('8n', time);
+    this.hat.triggerAttackRelease('16n', time);
   }
 
   dispose() {

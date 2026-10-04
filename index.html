@@ -61,7 +61,28 @@
           <select id="chord-rate">
             <option value="1m">Every bar</option>
             <option value="2n" selected>Every ½ bar (snappier)</option>
+            <option value="follow">On chord change (tight)</option>
           </select>
+        </div>
+
+        <div class="row">
+          <label for="style">Voicing</label>
+          <select id="style">
+            <option value="open" selected>Open position</option>
+            <option value="barre">Barre (tighter)</option>
+          </select>
+          <label for="capo">Capo</label>
+          <select id="capo">
+            <option value="0" selected>0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+          </select>
+          <label class="check"><input type="checkbox" id="sevenths" /> 7th chords</label>
         </div>
 
         <div class="row">

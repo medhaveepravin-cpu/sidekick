@@ -1,5 +1,9 @@
 // Wires everything together: mic input -> pitch detection -> key + chord ->
 // band, plus the live pitch ribbon. Browser-only (Tone.js, Web Audio, canvas).
+//
+// Timing runs on a single eighth-note clock (8 ticks per bar). Strum patterns
+// are 8-slot arrays. The chord can be committed on the bar, each half bar, or
+// the moment a confident change is detected ("tight" follow mode).
 
 import { detectPitchYIN, freqToMidi, freqToPitchClass, NOTE_NAMES } from './pitch.js';
 import {
@@ -8,34 +12,28 @@ import {
   voiceChordSpread,
   keyName,
   chordName,
-  GUITAR_RANGE,
 } from './theory.js';
 import { Band } from './band.js';
 
 const ANALYSIS_SIZE = 2048;
 const MIN_FREQ = 70;
 const MAX_FREQ = 1200;
+const RECENT_DECAY = 0.6; // per tick, ~1-beat memory for the tight follow mode
 
-// Strum patterns. Each event is a position within the chord step (0..1), a
-// direction (D down / U up), and a relative velocity. `hold` = pad only.
+// Strum patterns as 8 eighth-note slots; null = no strum on that eighth.
+const D = (vel) => ({ dir: 'D', vel });
+const U = (vel) => ({ dir: 'U', vel });
 const STRUM_PATTERNS = {
-  down: [{ at: 0, dir: 'D', vel: 1 }],
-  downup: [
-    { at: 0, dir: 'D', vel: 1 },
-    { at: 0.5, dir: 'U', vel: 0.7 },
-  ],
-  folk: [
-    { at: 0, dir: 'D', vel: 1 },
-    { at: 0.5, dir: 'D', vel: 0.85 },
-    { at: 0.625, dir: 'U', vel: 0.6 },
-    { at: 0.875, dir: 'U', vel: 0.6 },
-  ],
-  island: [
-    { at: 0.25, dir: 'U', vel: 0.6 },
-    { at: 0.5, dir: 'D', vel: 0.95 },
-    { at: 0.75, dir: 'U', vel: 0.6 },
-  ],
-  hold: [],
+  down: [D(1), null, null, null, D(0.9), null, null, null],
+  downup: [D(1), U(0.6), D(0.9), U(0.6), D(1), U(0.6), D(0.9), U(0.6)],
+  folk: [D(1), null, D(0.85), U(0.6), null, U(0.6), D(0.9), U(0.6)],
+  island: [null, U(0.6), D(0.95), U(0.6), null, U(0.6), D(0.95), U(0.6)],
+  hold: [null, null, null, null, null, null, null, null],
+};
+
+const VOICING_STYLES = {
+  open: { range: { low: 40, high: 74 }, maxVoices: 6, spread: 0.03 },
+  barre: { range: { low: 52, high: 76 }, maxVoices: 5, spread: 0.016 },
 };
 
 const els = {
@@ -46,6 +44,9 @@ const els = {
   chord: document.getElementById('chord'),
   strum: document.getElementById('strum'),
   chordRate: document.getElementById('chord-rate'),
+  style: document.getElementById('style'),
+  capo: document.getElementById('capo'),
+  sevenths: document.getElementById('sevenths'),
   tempo: document.getElementById('tempo'),
   tempoLabel: document.getElementById('tempo-label'),
   tap: document.getElementById('tap'),
@@ -65,12 +66,20 @@ const state = {
   keyTracker: createKeyTracker(),
   key: null,
   chord: null,
-  barHistogram: new Array(12).fill(0),
+  strumVoicing: [], // what the guitar plays (style + capo applied)
+  padVoicing: [],
+  bassRoot: 48,
+  strumSpread: 0.03,
+  barHistogram: new Array(12).fill(0), // accumulates over a bar, for key
+  recent: new Array(12).fill(0), // decaying window, for chord detection
   liveMidi: null,
   trail: [],
   tapTimes: [],
-  chordRepeatId: null,
-  drumRepeatId: null,
+  tickId: null,
+  tickInBar: 0,
+  tickCount: 0,
+  lastChangeTick: -99,
+  strummedThisTick: false,
 };
 
 // --- mic + transport ------------------------------------------------------
@@ -92,9 +101,11 @@ async function start() {
   state.band = new Band();
   applyMix();
 
+  state.tickInBar = 0;
+  state.tickCount = 0;
+  state.lastChangeTick = -99;
   Tone.Transport.bpm.value = Number(els.tempo.value);
-  scheduleChords();
-  state.drumRepeatId = Tone.Transport.scheduleRepeat(onDrumBar, '1m');
+  state.tickId = Tone.Transport.scheduleRepeat(onTick, '8n');
   Tone.Transport.start();
 
   state.running = true;
@@ -108,8 +119,7 @@ function stop() {
   if (state.band) state.band.releasePad(Tone.now());
   Tone.Transport.stop();
   Tone.Transport.cancel();
-  state.chordRepeatId = null;
-  state.drumRepeatId = null;
+  state.tickId = null;
   if (state.band) state.band.dispose();
   state.band = null;
   state.chord = null;
@@ -117,56 +127,108 @@ function stop() {
   els.status.textContent = 'Stopped.';
 }
 
-// Chord/strum/pad run on the selected subdivision; drums keep their own bar.
-function scheduleChords() {
-  if (state.chordRepeatId != null) Tone.Transport.clear(state.chordRepeatId);
-  state.chordRepeatId = Tone.Transport.scheduleRepeat(onChordStep, els.chordRate.value);
+// --- the clock ------------------------------------------------------------
+
+function onTick(time) {
+  const tick = state.tickInBar;
+  state.strummedThisTick = false;
+
+  // Decay the rolling window so the tight follow mode reacts to recent singing.
+  for (let i = 0; i < 12; i++) state.recent[i] *= RECENT_DECAY;
+
+  // Update the key once per bar from the whole-bar histogram.
+  if (tick === 0) updateKey();
+
+  // Decide whether a chord may be committed on this tick.
+  const mode = els.chordRate.value; // '1m' | '2n' | 'follow'
+  if (state.key) {
+    const cand = chooseChord(state.recent, state.key, {
+      prev: state.chord,
+      repeatPenalty: 0.5,
+      sevenths: els.sevenths.checked,
+    });
+    const changed =
+      !state.chord || state.chord.root !== cand.root || state.chord.quality !== cand.quality;
+
+    if (mode === 'follow') {
+      const dwellOk = state.tickCount - state.lastChangeTick >= 2;
+      if ((changed && dwellOk && confident(cand)) || !state.chord) {
+        commitChord(cand, time, changed || !state.chord);
+      }
+    } else {
+      const onGrid = mode === '2n' ? tick === 0 || tick === 4 : tick === 0;
+      if (onGrid) commitChord(cand, time, changed);
+    }
+  }
+
+  // Strum pattern (skip if a change already accent-strummed this tick).
+  if (!state.strummedThisTick && state.chord) {
+    const ev = (STRUM_PATTERNS[els.strum.value] || [])[tick];
+    if (ev) strumNow(time, ev.dir, ev.vel);
+  }
+
+  // Bass on beats 1 & 3, drums every eighth.
+  if ((tick === 0 || tick === 4) && state.chord) state.band.playBass(state.bassRoot, time, '2n');
+  state.band.drumTick(tick, time);
+
+  state.tickInBar = (tick + 1) % 8;
+  state.tickCount++;
 }
 
-function stepBeats() {
-  return els.chordRate.value === '2n' ? 2 : 4;
-}
-
-// One chord step: turn the notes sung over the step into a key + chord, strum
-// it with the chosen pattern, drop a bass note, and (re)voice the pad only when
-// the chord actually changes so it sustains across steps.
-function onChordStep(time) {
-  const hist = state.barHistogram;
+function updateKey() {
+  const total = state.barHistogram.reduce((a, b) => a + b, 0);
+  if (total > 0) {
+    let key = state.keyTracker.update(state.barHistogram);
+    if (els.keyLock.value !== 'auto') key = parseLockedKey(els.keyLock.value);
+    state.key = key;
+    els.keyLabel.textContent = keyName(key);
+  }
   state.barHistogram = new Array(12).fill(0);
-  const total = hist.reduce((a, b) => a + b, 0);
-  if (total === 0) return;
-
-  let key = state.keyTracker.update(hist);
-  if (els.keyLock.value !== 'auto') key = parseLockedKey(els.keyLock.value);
-  state.key = key;
-
-  const prev = state.chord;
-  const chord = chooseChord(hist, key, { prev, repeatPenalty: 0.5 });
-  const changed = !prev || prev.root !== chord.root || prev.quality !== chord.quality;
-  state.chord = chord;
-
-  const beatSeconds = 60 / Tone.Transport.bpm.value;
-  const stepSeconds = beatSeconds * stepBeats();
-  const voicing = voiceChordSpread(chord, { range: GUITAR_RANGE, maxVoices: 5 });
-
-  for (const e of STRUM_PATTERNS[els.strum.value] || []) {
-    state.band.strum(voicing, time + e.at * stepSeconds, { direction: e.dir, velocity: e.vel });
-  }
-  state.band.playBass(voicing[0], time, stepSeconds * 0.9);
-
-  if (changed) {
-    const padVoicing = voiceChordSpread(chord, { range: { low: 52, high: 76 }, maxVoices: 4 });
-    state.band.setPad(padVoicing, time);
-  }
-
-  els.keyLabel.textContent = keyName(key);
-  els.chord.textContent = chordName(chord);
 }
 
-function onDrumBar(time) {
-  if (!state.band) return;
-  const barSeconds = (60 / Tone.Transport.bpm.value) * 4;
-  state.band.playBeat(time, barSeconds);
+// Does the recent window actually outline this chord well enough to switch?
+function confident(chord) {
+  const total = state.recent.reduce((a, b) => a + b, 0);
+  if (total < 3) return false;
+  const covered = chord.notes.reduce((s, pc) => s + state.recent[pc], 0);
+  return covered / total >= 0.45;
+}
+
+function commitChord(chord, time, changed) {
+  state.chord = chord;
+  computeVoicings(chord);
+  els.chord.textContent = chordName(chord);
+  if (changed) {
+    state.band.setPad(state.padVoicing, time);
+    state.lastChangeTick = state.tickCount;
+    // In tight mode a change can land off the strum grid — accent it so it's heard.
+    if (els.chordRate.value === 'follow') {
+      state.band.strum(state.strumVoicing, time, {
+        direction: 'D',
+        velocity: 1,
+        spread: state.strumSpread,
+      });
+      state.strummedThisTick = true;
+    }
+  }
+}
+
+function computeVoicings(chord) {
+  const cfg = VOICING_STYLES[els.style.value] || VOICING_STYLES.open;
+  state.strumSpread = cfg.spread;
+  const base = voiceChordSpread(chord, { range: cfg.range, maxVoices: cfg.maxVoices });
+  state.bassRoot = base[0]; // bass ignores the capo
+  const capo = Number(els.capo.value) || 0;
+  state.strumVoicing = base.map((m) => m + capo);
+  state.padVoicing = voiceChordSpread(chord, { range: { low: 52, high: 76 }, maxVoices: 4 });
+}
+
+function strumNow(time, dir, vel) {
+  state.band.strum(state.strumVoicing, time, {
+    direction: dir,
+    velocity: vel,
+    spread: state.strumSpread,
+  });
 }
 
 // --- analysis loop --------------------------------------------------------
@@ -179,7 +241,9 @@ function analyseFrame() {
   if (freq && freq >= MIN_FREQ && freq <= MAX_FREQ && isVoiced(state.buffer)) {
     const midi = freqToMidi(freq);
     state.liveMidi = state.liveMidi == null ? midi : state.liveMidi * 0.6 + midi * 0.4;
-    state.barHistogram[freqToPitchClass(freq)] += 1;
+    const pc = freqToPitchClass(freq);
+    state.barHistogram[pc] += 1;
+    state.recent[pc] += 1;
     state.trail.push(midi);
   } else {
     state.liveMidi = null;
@@ -316,9 +380,6 @@ els.start.addEventListener('click', () => {
 });
 els.tempo.addEventListener('input', onTempoChange);
 els.tap.addEventListener('click', tapTempo);
-els.chordRate.addEventListener('change', () => {
-  if (state.running) scheduleChords();
-});
 [els.guitarMix, els.bassMix, els.drumMix, els.padMix].forEach((s) =>
   s.addEventListener('input', applyMix),
 );

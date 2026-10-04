@@ -53,8 +53,14 @@ and layout are not unit-tested — check those by ear and eye.
   dropdown.
 - **Strum:** pick a pattern — Down, Down-Up, Folk, Island/offbeat, or Hold (pad
   only, no strum).
-- **Change:** how often the chord can change — every bar, or every ½ bar for a
-  snappier follow.
+- **Change:** how often the chord can change — every bar, every ½ bar, or
+  **On chord change (tight)**, which commits a new chord the moment the recent
+  singing confidently outlines one (with a short dwell so it doesn't flutter)
+  and accents it with an immediate strum.
+- **Voicing:** Open position (low, wide) or Barre (higher, tighter).
+- **Capo:** 0–7 semitones, raising just the guitar (bass and pad stay put).
+- **7th chords:** extend the diatonic chords to sevenths (Cmaj7, Am7, G7,
+  Bm7♭5…) for a jazzier feel.
 - **Tempo:** drag the slider or hit **Tap** a few times in time.
 - **Mix:** guitar / bass / drums / pad sliders start at `0.9 / 0.7 / 0.45 / 0.25`
   — a guess; adjust to taste. Raise the pad for more sustain.
@@ -62,8 +68,8 @@ and layout are not unit-tested — check those by ear and eye.
 ## Known limits
 
 - Tempo is manual (slider or tap tempo).
-- Triads only — no sevenths.
-- Latency suits singing along, not tight instrument-style response.
+- Latency suits singing along, not tight instrument-style response (the tight
+  Change mode narrows the gap but can't remove it).
 
 ## Roadmap
 
